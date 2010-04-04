@@ -63,10 +63,16 @@ else # !sim
   include $(CLEAR_VARS)
   LOCAL_MODULE := liblog
   LOCAL_SRC_FILES := $(liblog_sources)
+ifeq ($(strip $(LIBLOG_USE_KMSG)),true)
+  LOCAL_CFLAGS := -DKMSG_LOG
+endif
   include $(BUILD_STATIC_LIBRARY)
 
   include $(CLEAR_VARS)
   LOCAL_MODULE := liblog
   LOCAL_WHOLE_STATIC_LIBRARIES := liblog
+ifeq ($(strip $(LIBLOG_USE_KMSG)),true)
+  LOCAL_CFLAGS := -DKMSG_LOG
+endif
   include $(BUILD_SHARED_LIBRARY)
 endif # !sim

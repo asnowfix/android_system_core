@@ -45,6 +45,9 @@ typedef enum {
     LOG_ID_MAIN = 0,
     LOG_ID_RADIO,
     LOG_ID_EVENTS,
+#ifdef KMSG_LOG
+    LOG_ID_KMSG,
+#endif
     LOG_ID_MAX
 } log_id_t;
 
@@ -55,7 +58,7 @@ static int (*write_to_log)(log_id_t, struct iovec *vec, size_t nr) =
 static pthread_mutex_t log_init_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-static int log_fds[(int)LOG_ID_MAX] = { -1, -1, -1 };
+static int log_fds[(int)LOG_ID_MAX] = { -1 };
 
 /*
  * This is used by the C++ code to decide if it should write logs through
@@ -111,6 +114,15 @@ static int __write_to_log_init(log_id_t log_id, struct iovec *vec, size_t nr)
         log_fds[LOG_ID_RADIO] = log_open("/dev/"LOGGER_LOG_RADIO, O_WRONLY);
         log_fds[LOG_ID_EVENTS] = log_open("/dev/"LOGGER_LOG_EVENTS, O_WRONLY);
 
+#ifdef KMSG_LOG
+        static const char *name = "/dev/__kmsg__";
+        if (mknod(name, S_IFCHR | 0600, (1 << 8) | 11) == 0) {
+            log_fds[LOG_ID_KMSG] = open(name, O_WRONLY);
+            fcntl(log_fds[LOG_ID_KMSG], F_SETFD, FD_CLOEXEC);
+            unlink(name);
+        }
+#endif
+
         write_to_log = __write_to_log_kernel;
 
         if (log_fds[LOG_ID_MAIN] < 0 || log_fds[LOG_ID_RADIO] < 0 ||
@@ -134,12 +146,14 @@ static int __write_to_log_init(log_id_t log_id, struct iovec *vec, size_t nr)
 
 int __android_log_write(int prio, const char *tag, const char *msg)
 {
-    struct iovec vec[3];
+    struct iovec vec[4];
     log_id_t log_id = LOG_ID_MAIN;
+    int ok;
 
     if (!tag)
         tag = "";
 
+#if 0					/* send radio events to main logcat */
     /* XXX: This needs to go! */
     if (!strcmp(tag, "HTC_RIL") ||
         !strncmp(tag, "RIL", 3) || /* Any log tag with "RIL" as the prefix */
@@ -150,6 +164,7 @@ int __android_log_write(int prio, const char *tag, const char *msg)
         !strcmp(tag, "PHONE") ||
         !strcmp(tag, "SMS"))
             log_id = LOG_ID_RADIO;
+#endif
 
     vec[0].iov_base   = (unsigned char *) &prio;
     vec[0].iov_len    = 1;
@@ -158,7 +173,32 @@ int __android_log_write(int prio, const char *tag, const char *msg)
     vec[2].iov_base   = (void *) msg;
     vec[2].iov_len    = strlen(msg) + 1;
 
-    return write_to_log(log_id, vec, 3);
+#if 0                                   /* buggy qcom code that modifies
+                                         * parameters passed as const... */
+    if(vec[1].iov_len + 1 >= LOGGER_ENTRY_MAX_PAYLOAD) {
+        char *temptag = tag;
+        temptag[50]='\0';
+        vec[1].iov_len =51;
+    }
+    if(vec[1].iov_len + vec[2].iov_len + 1 > LOGGER_ENTRY_MAX_PAYLOAD)
+        vec[2].iov_len= LOGGER_ENTRY_MAX_PAYLOAD-vec[1].iov_len-1;
+#endif
+
+    ok = write_to_log(log_id, vec, 3);
+
+#ifdef KMSG_LOG
+    vec[0].iov_base   = (void *) tag;
+    vec[0].iov_len    = strlen(tag);
+    vec[1].iov_base   = (void *) ": ";
+    vec[1].iov_len    = 2;
+    vec[2].iov_base   = (void *) msg;
+    vec[2].iov_len    = strlen(msg);
+    vec[3].iov_base   = (void *) "\n";
+    vec[3].iov_len    = 2;		/* incl. string termination here */
+    ok = ok && (write_to_log(LOG_ID_KMSG, vec, 4) != 0);
+#endif
+
+    return ok;
 }
 
 int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap)
@@ -172,6 +212,23 @@ int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap)
 
 int __android_log_print(int prio, const char *tag, const char *fmt, ...)
 {
+    va_list ap;
+    char buf[LOG_BUF_SIZE];    
+
+    va_start(ap, fmt);
+    vsnprintf(buf, LOG_BUF_SIZE, fmt, ap);
+    va_end(ap);
+
+    return __android_log_write(prio, tag, buf);
+}
+
+int __android_log_print_pri(int prio, const char *tag, const char *fmt, ...)
+{
+#ifdef NDEBUG
+    if (prio > ANDROID_LOG_WARN)
+      return 0;
+#endif
+
     va_list ap;
     char buf[LOG_BUF_SIZE];    
 
