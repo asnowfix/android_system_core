@@ -5,11 +5,10 @@ TOOLS := \
 	cat \
 	ps \
 	kill \
-	ln \
 	insmod \
 	rmmod \
 	lsmod \
-	ifconfig \
+    ifconfig \
 	setconsole \
 	mkdir \
 	rmdir \
@@ -46,6 +45,8 @@ TOOLS := \
 
 ifndef TINY_TOOLBOX
     TOOLS += \
+        cat \
+        ln \
         ls \
         mount \
         rm \
