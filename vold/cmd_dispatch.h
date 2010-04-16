@@ -27,5 +27,6 @@
 #define VOLD_CMD_MOUNT_VOLUME       "mount_volume:"
 #define VOLD_CMD_EJECT_MEDIA        "eject_media:"
 #define VOLD_CMD_FORMAT_MEDIA       "format_media:"
+#define VOLD_CMD_MOUNTED_VOLUMES    "mounted_volumes:"
 
 #endif

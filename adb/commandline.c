@@ -327,6 +327,13 @@ static void *stdin_read_thread(void *x)
                         exit(0);
                     }
                 default:
+#ifdef __CYGWIN__
+                    /* Convert backspace character (^H) to del char */
+                    if( buf[n] == 0x8 ) {
+                        buf[n] = SH_DEL_CHAR;
+                    }
+#endif
+
 #ifdef SH_HISTORY
                     if( buf[n] == SH_DEL_CHAR ) {
                         if( cmdlen > 0 )

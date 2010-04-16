@@ -7,9 +7,18 @@ copy_from := \
 	etc/dbus.conf \
 	etc/hosts
 
+ifeq ($(BOARD_USES_QCOM_REF_HARDWARE), true)
+copy_from += \
+	etc/init.qcom.bt.sh \
+	etc/init.qcom.coex.sh \
+	etc/init.qcom.fm.sh \
+	etc/init.qcom.sdio.sh
+endif
+
 ifeq ($(TARGET_PRODUCT),generic)
 copy_from += etc/vold.conf
 endif
+
 
 # the /system/etc/init.goldfish.sh is needed to enable emulator support
 # in the system image. In theory, we don't need these for -user builds
@@ -28,6 +37,12 @@ $(copy_to) : $(TARGET_OUT)/% : $(LOCAL_PATH)/% | $(ACP)
 
 ALL_PREBUILT += $(copy_to)
 
+ifeq ($(BOARD_USES_QCOM_REF_HARDWARE), true)
+file := $(TARGET_OUT)/etc/vold.conf
+$(file) : $(LOCAL_PATH)/etc/$(TARGET_PRODUCT)/vold.qcom.conf | $(ACP)
+	$(transform-prebuilt-to-target)
+ALL_PREBUILT += $(file)
+endif
 
 # files that live under /...
 
@@ -47,6 +62,25 @@ $(file) : $(LOCAL_PATH)/etc/init.goldfish.rc | $(ACP)
 	$(transform-prebuilt-to-target)
 ALL_PREBUILT += $(file)
 
+ifeq ($(BOARD_USES_QCOM_REF_HARDWARE), true)
+
+file := $(TARGET_ROOT_OUT)/init.qcom.rc
+$(file) : $(LOCAL_PATH)/etc/init.qcom.rc | $(ACP)
+	$(transform-prebuilt-to-target)
+ALL_PREBUILT += $(file)
+
+file := $(TARGET_ROOT_OUT)/init.qcom.sh
+$(file) : $(LOCAL_PATH)/etc/init.qcom.sh | $(ACP)
+	$(transform-prebuilt-to-target)
+ALL_PREBUILT += $(file)
+
+file := $(TARGET_ROOT_OUT)/init.qcom.post_boot.sh
+$(file) : $(LOCAL_PATH)/etc/init.qcom.post_boot.sh | $(ACP)
+	$(transform-prebuilt-to-target)
+ALL_PREBUILT += $(file)
+
+endif
+
 # create some directories (some are mount points)
 DIRS := $(addprefix $(TARGET_ROOT_OUT)/, \
 		sbin \
@@ -55,8 +89,8 @@ DIRS := $(addprefix $(TARGET_ROOT_OUT)/, \
 		sys \
 		system \
 		data \
-        sd-ext \
-	) \
+		sd-ext \
+		) \
 	$(TARGET_OUT_DATA)
 
 $(DIRS):

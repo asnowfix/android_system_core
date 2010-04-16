@@ -80,6 +80,7 @@ int inotify_bootstrap(void);
 
 int process_uevent_message(int socket);
 int simulate_uevent(char *subsystem, char *path, char *action, char **params);
+void process_uevent_list();
 
 int mmc_bootstrap(void);
 int ums_bootstrap(void);

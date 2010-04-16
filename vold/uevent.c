@@ -18,6 +18,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <limits.h>
+#include <fcntl.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -33,6 +35,11 @@
 
 #define UEVENT_PARAMS_MAX 32
 
+#define SPEED_MAX 6
+#define VERSION_MAX 6
+#define MANUFACTURER_MAX 16
+#define USB1_VERSION 1
+#define USB_FULL_SPEED 12
 enum uevent_action { action_add, action_remove, action_change };
 
 struct uevent {
@@ -48,6 +55,14 @@ struct uevent_dispatch {
     int (* dispatch) (struct uevent *);
 };
 
+typedef struct uevent_list {
+    struct uevent *event;
+    struct uevent_list *next;
+} uevent_list_t;
+
+struct uevent_list *uevent_list_root = NULL;
+
+
 static void dump_uevent(struct uevent *);
 static int dispatch_uevent(struct uevent *event);
 static void free_uevent(struct uevent *event);
@@ -59,7 +74,10 @@ static int handle_battery_event(struct uevent *);
 static int handle_mmc_event(struct uevent *);
 static int handle_block_event(struct uevent *);
 static int handle_bdi_event(struct uevent *);
+static int handle_usb_event(struct uevent *);
 static void _cb_blkdev_ok_to_destroy(blkdev_t *dev);
+static int add_usb_uevent_to_list(struct uevent *event);
+static int read_usb_device_property(char *event_path, char *prop, char *dev_prop, int len);
 
 static struct uevent_dispatch dispatch_table[] = {
     { "switch", handle_switch_event }, 
@@ -68,6 +86,8 @@ static struct uevent_dispatch dispatch_table[] = {
     { "block", handle_block_event },
     { "bdi", handle_bdi_event },
     { "power_supply", handle_powersupply_event },
+    { "usb", handle_usb_event },
+    { "scsi", handle_usb_event },
     { NULL, NULL }
 };
 
@@ -165,10 +185,63 @@ int simulate_uevent(char *subsys, char *path, char *action, char **params)
             break;
         event->param[i] = strdup(params[i]);
     }
-
-    rc = dispatch_uevent(event);
-    free_uevent(event);
+    if ((default_usb_devpath != NULL &&
+        !strncmp(path, default_usb_devpath, strlen(default_usb_devpath))) ||
+        (default_usb2_devpath != NULL &&
+        !strncmp(path, default_usb2_devpath, strlen(default_usb2_devpath)))) {
+        rc = add_usb_uevent_to_list(event);
+    } else {
+        rc = dispatch_uevent(event);
+        free_uevent(event);
+    }
     return rc;
+}
+/*
+ * Store USB devices uevents and process them after vold bootstrap.
+ */
+int add_usb_uevent_to_list(struct uevent *event)
+{
+    int rc = 0;
+    struct uevent_list *node;
+
+    if (!(node = malloc(sizeof(struct uevent_list)))) {
+        free_uevent(event);
+        return -errno;
+    }
+    node->event = event;
+    node->next = NULL;
+
+    if (!uevent_list_root)
+        uevent_list_root = node;
+    else {
+        struct uevent_list *list_scan;
+        list_scan = uevent_list_root;
+        while(list_scan->next)
+            list_scan = list_scan->next;
+
+        list_scan->next = node;
+    }
+
+    return rc;
+}
+/*
+ * Dispatch uevent to the event handlers and delete event node from the list.
+ */
+void process_uevent_list()
+{
+    struct uevent_list *list_scan, *node;
+    if (!uevent_list_root) {
+        return;
+    }
+    list_scan = uevent_list_root;
+    while(list_scan) {
+        node = list_scan;
+        dispatch_uevent(node->event);
+        list_scan = list_scan->next;
+        free_uevent(node->event);
+        free(node);
+    }
+    return;
 }
 
 static int dispatch_uevent(struct uevent *event)
@@ -258,7 +331,18 @@ static int handle_switch_event(struct uevent *event)
     char *name = get_uevent_param(event, "SWITCH_NAME");
     char *state = get_uevent_param(event, "SWITCH_STATE");
 
-
+    /* As a part of compostiion switch, mass storage driver
+     * sends offline event and de-register its event from switch
+     * Hence there is possibility that before handling the switch
+     * event, the mass storage sysfs mass storage entries might
+     * have removed. So, if name or state is NULL, consider it as
+     * offline and send false
+     * */
+    if(name == NULL || state == NULL) {
+        ums_hostconnected_set(false);
+        volmgr_enable_ums(false);
+	return 0;
+    }
     if (!strcmp(name, "usb_mass_storage")) {
         if (!strcmp(state, "online")) {
             ums_hostconnected_set(true);
@@ -273,7 +357,6 @@ static int handle_switch_event(struct uevent *event)
             door_open = false;
         volmgr_safe_mode(low_batt || door_open);
     }
-
     return 0;
 }
 
@@ -327,7 +410,20 @@ static int handle_block_event(struct uevent *event)
          */
         if (media->media_type == media_mmc)
             disk = blkdev_lookup_by_devno(maj, ALIGN_MMC_MINOR(min));
-        else
+        else if (media->media_type == media_usb) {
+            char path[PATH_MAX];
+            /*
+             * Truncate partition name from the device path.
+             * partition names are created using their
+             * major and minor number
+             */
+            if (n == 3)
+                truncate_sysfs_path(event->path, 1, path, sizeof(path));
+            else
+                strlcpy(path, event->path, sizeof(path));
+
+            disk = blkdev_lookup_by_path(path);
+        } else
             disk = blkdev_lookup_by_devno(maj, 0);
 
         if (!(blkdev = blkdev_create(disk,
@@ -444,4 +540,93 @@ static int handle_mmc_event(struct uevent *event)
     }
 
     return 0;
+}
+
+static int handle_usb_event(struct uevent *event)
+{
+    if (event->action == action_add) {
+        media_t *media;
+        char serial[80];
+        char *type;
+        char speed[SPEED_MAX], manf[MANUFACTURER_MAX];
+        char version[VERSION_MAX];
+        int len, speed_len;
+        char *endptr;
+        long val;
+
+        type = get_uevent_param(event, "DEVTYPE");
+        LOG_VOL("Device type: %s Event path: %s", type, event->path);
+        /*
+         * Read version and speed properties of the device that are connected
+         * to FSUSB port. If version is 2 and speed is 12 Mbs then device is
+         * not running at top speed. Send a notification to Mount Services.
+         */
+        if (!strncmp(type, "usb_device", strlen(type)) &&
+            !strncmp(event->path, default_usb2_devpath,
+                             strlen(default_usb2_devpath))) {
+
+            len = read_usb_device_property(event->path, "/version",
+                                                   version, sizeof(version));
+
+            speed_len = read_usb_device_property(event->path, "/speed",
+                                                       speed, sizeof(speed));
+            if (speed_len > 0  && len > 0) {
+                errno = 0;
+                val = strtol(version, &endptr, 10);
+                if ((errno == 0) && (endptr != version) && (val > USB1_VERSION)) {
+                    val = strtol(speed, &endptr, 10);
+                    if ((errno == 0) && (endptr != speed) && (val == USB_FULL_SPEED)) {
+                        len = read_usb_device_property(event->path,
+                                         "/manufacturer", manf, sizeof(manf));
+                        if (len)
+                            volmgr_send_speed_mismatch(manf);
+                   }
+                }
+            }
+        }
+        if (strcmp(type, "scsi_device"))
+            return 0;
+
+        if (!(media = media_create(event->path,
+                                   "USB",
+                                   NULL,
+                                   media_usb))) {
+            LOGE("Unable to allocate new media (%m)");
+            return -1;
+        }
+        LOG_VOL("New usb host '%s' added @ %s", media->name, media->devpath);
+    } else if (event->action == action_remove) {
+        media_t *media;
+
+       if (!(media = media_lookup_by_path(event->path, false))) {
+            LOGE("Unable to lookup media '%s'", event->path);
+            return -1;
+        }
+
+        LOG_VOL("usb host '%s' @ %s removed", media->name, media->devpath);
+        media_destroy(media);
+    } else {
+        LOGE("No handler implemented for action %d", event->action);
+    }
+    return 0;
+}
+
+static int read_usb_device_property(char *event_path, char *prop, char *dev_prop, int len)
+{
+    char path[PATH_MAX];
+    int fd, rc;
+
+    memset(dev_prop, 0, len);
+    strlcpy(path, "/sys", sizeof(path));
+    strlcat(path, event_path, sizeof(path));
+    strlcat(path, prop, sizeof(path));
+    if ((fd = open(path, O_RDONLY)) < 0) {
+        LOGE("Unable to open device '%s' (%s)", path, strerror(errno));
+        rc = 0;
+    } else if ((rc = read(fd, dev_prop, len)) < 0)  {
+        LOGE("Unable to read device property (%d, %s)",
+                      rc, strerror(errno));
+        rc = 0;
+    }
+    return rc;
 }

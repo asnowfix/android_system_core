@@ -21,7 +21,7 @@
 #include "volmgr.h"
 #include "blkdev.h"
 
-int ext_identify(blkdev_t *blkdev);
+int ext_identify(blkdev_t *blkdev, char **volume_name);
 int ext_check(blkdev_t *blkdev);
 int ext_mount(blkdev_t *blkdev, volume_t *vol, boolean safe_mode);
 #endif

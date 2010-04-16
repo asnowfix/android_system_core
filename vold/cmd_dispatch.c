@@ -34,6 +34,7 @@ static int do_set_ums_enable(char *cmd);
 static int do_mount_volume(char *cmd);
 static int do_eject_media(char *cmd);
 static int do_format_media(char *cmd);
+static int do_send_mount_status(char *cmd);
 
 static struct cmd_dispatch dispatch_table[] = {
     { VOLD_CMD_ENABLE_UMS,      do_set_ums_enable },
@@ -42,6 +43,7 @@ static struct cmd_dispatch dispatch_table[] = {
     { VOLD_CMD_MOUNT_VOLUME,    do_mount_volume },
     { VOLD_CMD_EJECT_MEDIA,     do_eject_media },
     { VOLD_CMD_FORMAT_MEDIA,    do_format_media },
+    { VOLD_CMD_MOUNTED_VOLUMES, do_send_mount_status},
     { NULL, NULL }
 };
 
@@ -99,6 +101,11 @@ static int do_set_ums_enable(char *cmd)
     return volmgr_enable_ums(false);
 }
 
+
+static int do_send_mount_status(char *cmd)
+{
+    return volmgr_send_mount_status();
+}
 static int do_mount_volume(char *cmd)
 {
     return volmgr_start_volume_by_mountpoint(&cmd[strlen("mount_volume:")]);

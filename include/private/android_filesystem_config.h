@@ -51,6 +51,7 @@
 #define AID_SDCARD_RW     1015  /* external storage write access */
 #define AID_VPN           1016  /* vpn system */
 #define AID_KEYSTORE      1017  /* keystore subsystem */
+#define AID_FM_RADIO	  1018  /* FM radio */
 
 #define AID_SHELL         2000  /* adb and debug shell user */
 #define AID_CACHE         2001  /* cache access */
@@ -63,6 +64,7 @@
 #define AID_INET          3003  /* can create AF_INET and AF_INET6 sockets */
 #define AID_NET_RAW       3004  /* can create raw INET sockets */
 #define AID_NET_ADMIN     3005  /* can configure interfaces and routing tables. */
+#define AID_QCOM_ONCRPC   3006  /* can read/write /dev/oncrpc/* files .*/
 
 #define AID_MISC          9998  /* access to misc storage */
 #define AID_NOBODY        9999
@@ -103,7 +105,9 @@ static struct android_id_info android_ids[] = {
     { "inet",      AID_INET, },
     { "net_raw",   AID_NET_RAW, },
     { "net_admin", AID_NET_ADMIN, },
+    { "qcom_oncrpc", AID_QCOM_ONCRPC, },
     { "misc",      AID_MISC, },
+    { "fm_radio",   AID_FM_RADIO, },
     { "nobody",    AID_NOBODY, },
 };
 
@@ -152,7 +156,9 @@ static struct fs_path_config android_dirs[] = {
 static struct fs_path_config android_files[] = {
     { 00440, AID_ROOT,      AID_SHELL,     "system/etc/init.goldfish.rc" },
     { 00550, AID_ROOT,      AID_SHELL,     "system/etc/init.goldfish.sh" },
+    { 00550, AID_WIFI,      AID_WIFI,      "system/etc/init.qcom.sdio.sh" },
     { 00440, AID_ROOT,      AID_SHELL,     "system/etc/init.trout.rc" },
+    { 00440, AID_ROOT,      AID_SHELL,     "system/etc/init.qcom.rc" },
     { 00550, AID_ROOT,      AID_SHELL,     "system/etc/init.ril" },
     { 00550, AID_ROOT,      AID_SHELL,     "system/etc/init.testmenu" },
     { 00550, AID_DHCP,      AID_SHELL,     "system/etc/dhcpcd/dhcpcd-run-hooks" },

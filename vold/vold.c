@@ -43,7 +43,7 @@
 
 
 #define VOLD_SOCKET "vold"
-
+#define DEFAULT_USBCOMPOSITION_ID  "9017"
 /*
  * Globals
  */
@@ -52,7 +52,7 @@ static int ver_major = 2;
 static int ver_minor = 0;
 static pthread_mutex_t write_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int fw_sock = -1;
-
+static int bootcompleted = 0;
 int bootstrap = 0;
 
 int main(int argc, char **argv)
@@ -61,7 +61,25 @@ int main(int argc, char **argv)
     int uevent_sock = -1;
     struct sockaddr_nl nladdr;
     int uevent_sz = 64 * 1024;
+    int fd;
+    char value[PROPERTY_VALUE_MAX];
 
+    /* Read USB composition product id from system properties
+     * and set it in sysfs
+     */
+    if ((fd = open("/sys/module/g_android/parameters/product_id", O_RDWR)) < 0)
+    {
+        LOGE("Unable to open /sys/module/g_android/parameters/product_id (%s)",
+             strerror(errno));
+    }
+    /* Check and wirte product id only if the file is empty  */
+    else if(read(fd, value, strlen(DEFAULT_USBCOMPOSITION_ID)) !=
+                               strlen(DEFAULT_USBCOMPOSITION_ID)) {
+        property_get("persist.sys.usbcomposition.id", value,
+                                       DEFAULT_USBCOMPOSITION_ID);
+        write(fd, value, strlen(value));
+        close(fd);
+    }
     LOGI("Android Volume Daemon version %d.%d", ver_major, ver_minor);
 
     /*
@@ -185,6 +203,14 @@ int main(int argc, char **argv)
         }
 
         if (FD_ISSET(fw_sock, &read_fds)) {
+            /* Mount Listener starts after Android boot.
+             * A command from Mount Listener indicates Android boot
+             * is completed. Start processing of uevents for USB devices.
+             */
+            if (bootcompleted == 0) {
+                process_uevent_list();
+            }
+            bootcompleted = 1;
             if ((rc = process_framework_command(fw_sock)) < 0) {
                 if (rc == -ECONNRESET) {
                     LOGE("Framework disconnected");
@@ -196,7 +222,6 @@ int main(int argc, char **argv)
                 }
             }
         }
-
         if (FD_ISSET(uevent_sock, &read_fds)) {
             if ((rc = process_uevent_message(uevent_sock)) < 0) {
                 LOGE("Error processing uevent msg (%s)", strerror(errno));

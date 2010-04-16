@@ -62,8 +62,10 @@ void *load_file(const char *fn, unsigned *_sz)
                        0,
                        NULL );
 
-    if (file == INVALID_HANDLE_VALUE)
+    if (file == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "load_file: file open failed (rc=%ld)\n", GetLastError());
         return NULL;
+    }
 
     file_size = GetFileSize( file, NULL );
     data      = NULL;
@@ -79,12 +81,44 @@ void *load_file(const char *fn, unsigned *_sz)
             if ( !ReadFile( file, data, file_size, &out_bytes, NULL ) ||
                  out_bytes != file_size )
             {
-                fprintf(stderr, "load_file: could not read %ld bytes from '%s'\n", file_size, fn);
-                free(data);
-                data      = NULL;
-                file_size = 0;
+                int retry_failed = 0;
+
+                if (GetLastError() == ERROR_NO_SYSTEM_RESOURCES) {
+                    /* Attempt to read file in 10MB chunks */
+                    DWORD bytes_to_read = file_size;
+                    DWORD bytes_read    = 0;
+                    DWORD block_size    = 10*1024*1024;
+
+                    SetFilePointer( file, 0, NULL, FILE_BEGIN );
+
+                    while (bytes_to_read > 0) {
+                        if (block_size > bytes_to_read) {
+                            block_size = bytes_to_read;
+                        }
+
+                        if (!ReadFile( file, data+bytes_read,
+                                       block_size, &out_bytes, NULL ) ||
+                            out_bytes != block_size) {
+                            retry_failed = 1;
+                            break;
+                        }
+                        bytes_read    += block_size;
+                        bytes_to_read -= block_size;
+                    }
+                } else {
+                    retry_failed = 1;
+                }
+
+                if (retry_failed) {
+                    fprintf(stderr, "load_file: could not read %ld bytes from '%s'\n", file_size, fn);
+                    free(data);
+                    data      = NULL;
+                    file_size = 0;
+                }
             }
         }
+    } else {
+        fprintf(stderr, "load_file: file empty or negative size %ld\n", file_size);
     }
     CloseHandle( file );
 

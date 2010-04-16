@@ -1,0 +1,90 @@
+##########################################################################
+# Makefile for compiling under Windows/Cygwin
+#
+# Compilation instructions:
+#
+#   Requirements:
+#     - Cygwin with development GCC packages
+#     - optionally, MinGW with libz if compiling for MinGW
+#
+#   Files from Android tree:
+#     system/core/fastboot
+#     development/host/windows
+#     system/core/include
+#     system/core/mkbootimg
+#     system/core/libzipfile
+#
+#   To compile:
+#     Set USE_CYGWIN below based on Cygwin vs MinGW compile
+#     make -f Makefile.win clean
+#     make -f Makefile.win
+#
+#   To create zip file of all Android components needed for
+#   compiling fastboot on Windows-Cygwin:
+#     make -f Makefile.win dev-pkg
+#
+# The resulting fastboot.exe binary requires AdbWinApi.dll
+# in development/host/windows/prebuilt/usb.
+
+# Define USE_CYGWIN to compile against Cygwin;
+# requiring cygwin1.dll at runtime.
+USE_CYGWIN := 0
+
+SRC_FILES := \
+	protocol.c \
+	engine.c \
+	bootimg.c \
+	fastboot.c \
+	usb_windows.c \
+	util_windows.c \
+	../libzipfile/centraldir.c \
+	../libzipfile/zipfile.c
+
+INCS := \
+	-I/usr/include/w32api/ddk \
+	-I../../../development/host/windows/usb/api \
+	-I../include \
+	-I../libzipfile \
+	-I../mkbootimg \
+	-I.
+
+DIRECT_INCS := \
+	-include ../include/arch/windows/AndroidConfig.h
+
+LIB_PATH := \
+	-L../../../development/host/windows/prebuilt/usb
+
+LIBS := \
+	-lpthread \
+	-lz \
+	../../../development/host/windows/prebuilt/usb/AdbWinApi.a
+
+CFLAGS := \
+	-O2 -Wall -Wno-unused-parameter \
+	-D_XOPEN_SOURCE -D_GNU_SOURCE -static
+
+ifneq ($(USE_CYGWIN), 1)
+CFLAGS += \
+	-mno-cygwin
+endif
+
+fastboot: $(SRC_FILES)
+	gcc $(CFLAGS) $(INCS) -o $@ $(SRC_FILES) $(DIRECT_INCS) $(LIB_PATH) $(LIBS)
+	@cp ../../../development/host/windows/prebuilt/usb/AdbWinApi.dll .
+
+clean:
+	@rm -f fastboot.exe AdbWinApi.dll
+
+dev-pkg: fastboot-win.zip
+
+fastboot-win.zip:
+	@(cd ../../..; \
+	rm -f $@; \
+	zip -r $@ \
+		system/core/fastboot/ \
+		system/core/mkbootimg/ \
+		system/core/libzipfile/ \
+		system/core/include/ \
+		development/host/windows/;)
+	@echo -e "\n$@ generated in Android root directory\n"
+

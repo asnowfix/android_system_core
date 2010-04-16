@@ -90,6 +90,7 @@ struct {
     unsigned int gid;
 } control_perms[] = {
     { "dumpstate",AID_SHELL, AID_LOG },
+    { "fm_dl", AID_FM_RADIO, AID_FM_RADIO},
      {NULL, 0, 0 }
 };
 
@@ -127,9 +128,11 @@ out:
 }
 
 /* (8 header words + 247 toc words) = 1020 bytes */
-/* 1024 bytes header and toc + 247 prop_infos @ 128 bytes = 32640 bytes */
+/* Original: 1024 bytes header and toc + 247 prop_infos @ 128 bytes = 32640 bytes */
+/* Current:  1024 bytes header and toc + 226 prop_infos @ 140 bytes = 32664 bytes */
+/*           (21 toc entries will be wasted for longer property value length max) */
 
-#define PA_COUNT_MAX  247
+#define PA_COUNT_MAX  226
 #define PA_INFO_START 1024
 #define PA_SIZE       32768
 

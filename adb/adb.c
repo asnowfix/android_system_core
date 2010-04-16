@@ -141,11 +141,13 @@ void put_apacket(apacket *p)
     free(p);
 }
 
-void handle_online(void)
+void handle_online(atransport *t)
 {
     D("adb: online\n");
 #if !ADB_HOST
     property_set("adb.connected","1");
+#else
+    t->offline_retry = 0;
 #endif
 }
 
@@ -156,6 +158,8 @@ void handle_offline(atransport *t)
     run_transport_disconnects(t);
 #if !ADB_HOST
     property_set("adb.connected","");
+#else
+    t->offline_retry = ADB_OFFLINE_RETRY_MAX;
 #endif
 }
 
@@ -331,7 +335,7 @@ void handle_packet(apacket *p, atransport *t)
             handle_offline(t);
         }
         parse_banner((char*) p->data, t);
-        handle_online();
+        handle_online(t);
         if(!HOST) send_connect(t);
         break;
 
@@ -849,6 +853,9 @@ int adb_main(int is_daemon)
 
 #if ADB_HOST
     HOST = 1;
+
+    start_stale_transport_scanner();
+
     usb_vendors_init();
     usb_init();
     local_init(ADB_LOCAL_TRANSPORT_PORT);

@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2007 The Android Open Source Project
+ * Copyright (c) 2009, Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,11 +50,14 @@ struct uevent {
     int minor;
 };
 
-static int open_uevent_socket(void)
+int open_uevent_socket(void)
 {
     struct sockaddr_nl addr;
     int sz = 64*1024; // XXX larger? udev uses 16MB!
-    int s;
+    static int s = -1;
+
+    if (s >= 0)
+	    return s;
 
     memset(&addr, 0, sizeof(addr));
     addr.nl_family = AF_NETLINK;
@@ -102,7 +106,7 @@ static struct perms_ devperms[] = {
     { "/dev/kgsl",          0666,   AID_ROOT,       AID_ROOT,       0 },
 
         /* these should not be world writable */
-    { "/dev/diag",          0660,   AID_RADIO,      AID_RADIO,        0 },
+    { "/dev/diag",          0660,   AID_SYSTEM,      AID_DIAG,        1 },
     { "/dev/diag_arm9",     0660,   AID_RADIO,      AID_RADIO,        0 },
     { "/dev/android_adb",   0660,   AID_ADB,        AID_ADB,        0 },
     { "/dev/android_adb_enable",   0660,   AID_ADB,        AID_ADB,        0 },
@@ -110,16 +114,23 @@ static struct perms_ devperms[] = {
     { "/dev/ttyHS0",        0600,   AID_BLUETOOTH,  AID_BLUETOOTH,  0 },
     { "/dev/uinput",        0660,   AID_SYSTEM,     AID_BLUETOOTH,  0 },
     { "/dev/alarm",         0664,   AID_SYSTEM,     AID_RADIO,      0 },
+    { "/dev/rtc1",          0660,   AID_SYSTEM,     AID_RADIO,      0 },
     { "/dev/tty0",          0660,   AID_ROOT,       AID_SYSTEM,     0 },
     { "/dev/graphics/",     0660,   AID_ROOT,       AID_GRAPHICS,   1 },
     { "/dev/msm_hw3dm",     0660,   AID_SYSTEM,     AID_GRAPHICS,   0 },
+    { "/dev/hw3d",          0660,   AID_SYSTEM,     AID_GRAPHICS,   0 },
+    { "/dev/kgsl",          0666,   AID_SYSTEM,     AID_GRAPHICS,   0 },
+    { "/dev/msm_rotator",   0660,   AID_SYSTEM,     AID_GRAPHICS,   0 },
     { "/dev/input/",        0660,   AID_ROOT,       AID_INPUT,      1 },
     { "/dev/eac",           0660,   AID_ROOT,       AID_AUDIO,      0 },
     { "/dev/cam",           0660,   AID_ROOT,       AID_CAMERA,     0 },
     { "/dev/pmem",          0660,   AID_SYSTEM,     AID_GRAPHICS,   0 },
+    { "/dev/pmem_gpu",      0666,   AID_SYSTEM,     AID_GRAPHICS,   1 },
+    { "/dev/pmem_smipool",  0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/pmem_adsp",     0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/pmem_audio",    0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/pmem_camera",   0660,   AID_SYSTEM,     AID_CAMERA,     1 },
-    { "/dev/oncrpc/",       0660,   AID_ROOT,       AID_SYSTEM,     1 },
+    { "/dev/oncrpc/",       0660,   AID_ROOT,       AID_QCOM_ONCRPC, 1 },
     { "/dev/adsp/",         0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/snd/",          0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/mt9t013",       0660,   AID_SYSTEM,     AID_SYSTEM,     0 },
@@ -132,13 +143,28 @@ static struct perms_ devperms[] = {
     { "/dev/cm3602",        0640,   AID_COMPASS,    AID_SYSTEM,     0 },
     { "/dev/akm8976_pffd",  0640,   AID_COMPASS,    AID_SYSTEM,     0 },
     { "/dev/lightsensor",   0640,   AID_SYSTEM,     AID_SYSTEM,     0 },
+#ifdef AUDIOV2
+    { "/dev/msm_pcm_dec",   0666,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/snd/controlC0", 0666,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/radio0",        0644,   AID_FM_RADIO,   AID_FM_RADIO,   1 },
+    { "/dev/i2c-2",         0664,   AID_ROOT,       AID_SYSTEM,     1 },
+#endif
+
     { "/dev/msm_pcm_out",   0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/msm_pcm_in",    0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/msm_pcm_ctl",   0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_preproc_ctl", 0660, AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/msm_snd",       0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/msm_mp3",       0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_aac",       0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_amrnb",     0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_amr_in",     0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_amrwb",     0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_qcelp",     0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_evrc",      0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/audience_a1026", 0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/tpa2018d1",     0660,   AID_SYSTEM,     AID_AUDIO,      1 },
+    { "/dev/msm_voicememo", 0660,   AID_SYSTEM,     AID_AUDIO,      1 },
     { "/dev/msm_audpre",    0660,   AID_SYSTEM,     AID_AUDIO,      0 },
     { "/dev/msm_audio_ctl", 0660,   AID_SYSTEM,     AID_AUDIO,      0 },
     { "/dev/htc-acoustic",  0660,   AID_SYSTEM,     AID_AUDIO,      0 },
@@ -157,6 +183,11 @@ static struct perms_ devperms[] = {
     { "/dev/ts0710mux",     0640,   AID_RADIO,      AID_RADIO,      1 },
     { "/dev/ppp",           0660,   AID_RADIO,      AID_VPN,        0 },
     { "/dev/tun",           0640,   AID_VPN,        AID_VPN,        0 },
+    { "/dev/system_bus_freq", 0660, AID_SYSTEM,       AID_SYSTEM,       0 },
+    { "/dev/cpu_dma_latency", 0660, AID_SYSTEM,       AID_SYSTEM,       0 },
+    { "/dev/msm_vidc_reg", 0660, AID_SYSTEM,       AID_AUDIO,       1 },
+    { "/dev/msm_vidc_dec", 0660, AID_SYSTEM,       AID_AUDIO,       1 },
+    { "/dev/msm_vidc_enc", 0660, AID_SYSTEM,       AID_AUDIO,       1 },
     { NULL, 0, 0, 0, 0 },
 };
 

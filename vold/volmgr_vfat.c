@@ -1,6 +1,7 @@
 
 /*
  * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +17,7 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 
 #include <sys/mount.h>
 #include <cutils/properties.h>
@@ -26,15 +28,126 @@
 #include "logwrapper.h"
 
 #define VFAT_DEBUG 0
+#define VFAT_TYPE_LEN 9
+#define VFAT_VOL_NAME_LEN 12
 
 static char FSCK_MSDOS_PATH[] = "/system/bin/fsck_msdos";
 
-int vfat_identify(blkdev_t *dev)
+int vfat_identify(blkdev_t *dev, char **volume_name)
 {
+    int rc = -1, fd;
+    char *devpath, vfat_type [VFAT_TYPE_LEN], vfat_volume_name[VFAT_VOL_NAME_LEN];
+    int i = 0;
+
 #if VFAT_DEBUG
     LOG_VOL("vfat_identify(%d:%d):", dev->major, dev->minor);
 #endif
-    return 0; // XXX: Implement
+
+    devpath = blkdev_get_devpath(dev);
+
+    if ((fd = open(devpath, O_RDWR)) < 0) {
+        LOGE("Unable to open device '%s' (%s)", devpath,
+             strerror(errno));
+        free(devpath);
+        return -errno;
+    }
+
+    /* For FAT16:
+     * The fat type is stored at byte 55 and is 8 bytes long
+     * The volume label/name is stored at byte 44 and is 11 bytes long
+     */
+
+    if (lseek(fd, 54, SEEK_SET) < 0) {
+        LOGE("Unable to lseek to get superblock (%s)", strerror(errno));
+        rc =  -errno;
+        goto out;
+    }
+    /* Read FAT type */
+    if (read(fd, &vfat_type, sizeof(vfat_type)) != sizeof(vfat_type)) {
+        LOGE("Unable to read superblock (%s)", strerror(errno));
+        rc =  -errno;
+        goto out;
+    }
+
+    vfat_type[VFAT_TYPE_LEN - 1] = '\0';
+    /* Check FAT type for FAT16 */
+    if (!strncmp(vfat_type,"FAT16",5)) {
+        if (lseek(fd, 43, SEEK_SET) < 0) {
+            LOGE("Unable to lseek to get superblock (%s)", strerror(errno));
+            rc =  -errno;
+            goto out;
+        }
+        /* Read volume name */
+        if (read(fd, vfat_volume_name, sizeof(vfat_volume_name)) != sizeof(vfat_volume_name)) {
+            LOGE("Unable to read superblock (%s)", strerror(errno));
+            rc =  -errno;
+            goto out;
+        }
+
+        vfat_volume_name[VFAT_VOL_NAME_LEN - 1] = '\0';
+        rc = 0;
+        goto trim;
+    }
+
+    /* For FAT32:
+     * The fat type is stored at byte 83 and is 8 bytes long
+     * The volume label/name is stored at byte 72 and is 11 bytes long
+     */
+    if (lseek(fd, 82, SEEK_SET) < 0) {
+        LOGE("Unable to lseek to get superblock (%s)", strerror(errno));
+        rc =  -errno;
+        goto out;
+    }
+    /* Read File type info */
+    if (read(fd, &vfat_type, sizeof(vfat_type)) != sizeof(vfat_type)) {
+        LOGE("Unable to read superblock (%s)", strerror(errno));
+        rc =  -errno;
+        goto out;
+    }
+
+    vfat_type[VFAT_TYPE_LEN - 1] = '\0';
+    /* Check file type for FAT32 */
+    if (!strncmp(vfat_type,"FAT32",5)) {
+        if (lseek(fd, 71, SEEK_SET) < 0) {
+            LOGE("Unable to lseek to get superblock (%s)", strerror(errno));
+            rc =  -errno;
+            goto out;
+        }
+
+     if (read(fd, vfat_volume_name, sizeof(vfat_volume_name)) != sizeof(vfat_volume_name)) {
+         LOGE("Unable to read superblock (%s)", strerror(errno));
+         rc =  -errno;
+         goto out;
+        }
+
+     vfat_volume_name[VFAT_VOL_NAME_LEN -1] = '\0';
+     rc = 0;
+    }
+
+trim:
+    /*
+     * Remove blank space at the end of the string, volume name
+     */
+    for (i = (strlen(vfat_volume_name)-1); i >= 0; i--) {
+        if (vfat_volume_name[i] == ' ') {
+            vfat_volume_name[i] = '\0';
+        } else {
+            break;
+        }
+    }
+    if (strlen(vfat_volume_name))
+        *volume_name = strdup(vfat_volume_name);
+    else
+        *volume_name = NULL;
+    LOGE("Volume_name= %s", vfat_volume_name);
+
+out:
+#if VFAT_DEBUG
+    LOG_VOL("vfat_identify(%s): rc = %d", devpath, rc);
+#endif
+    free(devpath);
+    close(fd);
+    return rc;
 }
 
 int vfat_check(blkdev_t *dev)

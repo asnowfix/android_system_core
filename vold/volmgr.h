@@ -75,11 +75,12 @@ typedef enum volume_state {
     volstate_formatting,
 } volume_state_t;
 
+#define VOLD_EVT_SPEED_MISMATCH   "speed_mismatch:"
 struct volume;
 
 struct volmgr_fstable_entry {
     char *name;
-    int     (*identify_fn) (blkdev_t *dev);
+    int     (*identify_fn) (blkdev_t *dev, char **volume_name);
     int     (*check_fn) (blkdev_t *dev);
     int     (*mount_fn) (blkdev_t *dev, struct volume *vol, boolean safe_mode);
     boolean case_sensitive_paths;
@@ -122,6 +123,9 @@ typedef struct volume {
     struct volume            *next;
 } volume_t;
 
+extern char *default_usb_devpath;
+extern char *default_usb2_devpath;
+
 int volmgr_consider_disk(blkdev_t *dev);
 int volmgr_notify_eject(blkdev_t *dev, void (* cb) (blkdev_t *));
 int volmgr_send_states(void);
@@ -131,5 +135,7 @@ int volmgr_start_volume_by_mountpoint(char *mount_point);
 int volmgr_safe_mode(boolean enable);
 int volmgr_format_volume(char *mount_point);
 int volmgr_set_volume_key(char *mount_point, unsigned char *key);
+int volmgr_send_mount_status(void);
+int volmgr_send_speed_mismatch(char *mfr_name);
 void KillProcessesWithOpenFiles(const char* mountPoint, boolean sigkill, int *excluded, int num_excluded);
 #endif

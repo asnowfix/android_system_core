@@ -23,7 +23,7 @@
 
 
 
-int vfat_identify(blkdev_t *blkdev);
+int vfat_identify(blkdev_t *blkdev, char **volume_name);
 int vfat_check(blkdev_t *blkdev);
 int vfat_mount(blkdev_t *blkdev, volume_t *vol, boolean safe_mode);
 #endif

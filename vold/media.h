@@ -26,6 +26,7 @@ typedef enum media_type {
     media_unknown,
     media_mmc,
     media_devmapper,
+    media_usb,
 } media_type_t;
 
 /*

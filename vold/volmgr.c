@@ -1,6 +1,7 @@
 
 /*
  * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +24,7 @@
 #include <sched.h>
 
 #include <sys/mount.h>
+#include <sys/stat.h>
 
 #include <cutils/config_utils.h>
 #include <cutils/properties.h>
@@ -39,11 +41,22 @@
 
 #define DEBUG_VOLMGR 0
 
+#define DISK_NUM_LENGTH 3
+#define DISK_NUM_MAX 128
+
+/* Stores mount points of all USB mass storage devices that are connected */
+#define MOUNTS_FILE "/data/.mounts"
+#define TEMP_MOUNTS_FILE "/data/.temp_mounts"
+
 static volume_t *vol_root = NULL;
 static boolean safe_mode = true;
+char *default_usb_devpath = NULL;
+char *default_usb2_devpath = NULL;
+static char *default_usb_mountpoint = NULL;
+static char *default_usb_mountpath = NULL;
 
 static struct volmgr_fstable_entry fs_table[] = {
-//    { "ext3", ext_identify, ext_check, ext_mount , true },
+    { "ext3", ext_identify, ext_check, ext_mount , true },
     { "vfat", vfat_identify, vfat_check, vfat_mount , false },
     { NULL, NULL, NULL, NULL , false}
 };
@@ -93,6 +106,7 @@ static void volmgr_reaper_thread_sighandler(int signo);
 static void volmgr_add_mediapath_to_volume(volume_t *v, char *media_path);
 static int volmgr_send_eject_request(volume_t *v);
 static volume_t *volmgr_lookup_volume_by_mountpoint(char *mount_point, boolean leave_locked);
+static void  volmgr_update_mounts_file(char *mount_point);
 
 static boolean _mountpoint_mounted(char *mp)
 {
@@ -190,15 +204,62 @@ int volmgr_format_volume(char *mount_point)
     return rc;
 }
 
+/*
+ * Cleans up stale mount points on reboot
+ */
+static void volmgr_cleanup_stale_mountpoints(void)
+{
+    int len;
+    FILE *fp;
+    char mp[PATH_MAX];
+    if ((fp = fopen(MOUNTS_FILE, "r"))) {
+        while(fgets(mp, sizeof(mp), fp) != NULL) {
+            len = strlen(mp);
+            /* Remove delimiter '\n' from mount point string
+             * before calling rmdir()
+             */
+            if (len > 0) {
+                if (mp[len-1] == '\n')
+                    mp[len-1] = '\0';
+                rmdir (mp);
+            }
+        }
+        fclose(fp);
+    }
+    /* All entries of the file are removed by opening it in write mode */
+    if ((fp = fopen(MOUNTS_FILE, "w")))
+        fclose(fp);
+
+    return;
+}
+
 int volmgr_bootstrap(void)
 {
-    int rc;
+    int i, rc;
+    char path[PATH_MAX];
 
     if ((rc = volmgr_readconfig("/system/etc/vold.conf")) < 0) {
         LOGE("Unable to process config");
         return rc;
     }
 
+   /*
+    * Cleanup the mount path directory
+    */
+    volmgr_cleanup_stale_mountpoints();
+
+    /* Create all parent directories of UMS device mount path */
+    if (default_usb_mountpath) {
+        i = 0;
+        while (default_usb_mountpath[i] != '\0') {
+            if (default_usb_mountpath[i] == '/' && i >= 2) {
+                path[i] = '\0';
+                mkdir(path, 0777);
+            }
+            path[i] = default_usb_mountpath[i];
+            i++;
+        }
+    }
     /*
      * Check to see if any of our volumes is mounted
      */
@@ -260,6 +321,27 @@ int volmgr_send_states(void)
 
     return 0;
 }
+/*
+ * Called when Mount Service asks for the mount status of all the devices
+ * which are mounted before Mount Service start during the boot up
+ */
+int volmgr_send_mount_status(void)
+{
+    int rc = 0;
+    volume_t *vol_scan = vol_root;
+
+    while (vol_scan) {
+        pthread_mutex_lock(&vol_scan->lock);
+        if (vol_scan->state == volstate_mounted) {
+            if ((rc = volume_send_state(vol_scan)) < 0) {
+                LOGE("Error sending state to framework (%d)", rc);
+            }
+        }
+        pthread_mutex_unlock(&vol_scan->lock);
+        vol_scan = vol_scan->next;
+    }
+    return rc;
+}
 
 /*
  * Called when a block device is ready to be
@@ -268,18 +350,59 @@ int volmgr_send_states(void)
 int volmgr_consider_disk(blkdev_t *dev)
 {
     volume_t *vol;
+    volume_t *vol_new;
+    boolean exact = 1;
 
     if (!(vol = volmgr_lookup_volume_by_mediapath(dev->media->devpath, true)))
         return 0;
 
+    /**
+     * If volume name is not found for the block device
+     * then use defualt mount point name for mounting this device
+     */
     pthread_mutex_lock(&vol->lock);
+    if (!volmgr_lookup_volume_by_mediapath(dev->media->devpath, false))
+         exact = 0;
+    else
+         exact = 1;
+    pthread_mutex_unlock(&vol->lock);
 
-    if (vol->state == volstate_mounted) {
-        LOGE("Volume %s already mounted (did we just crash?)", vol->mount_point);
-        pthread_mutex_unlock(&vol->lock);
-        return 0;
+    if (vol->state == volstate_mounted || vol->state == volstate_checking) {
+        if (!exact && (vol->media_type == media_usb)) {
+            if ((dev->major == vol->dev->major) && (dev->minor != vol->dev->minor)) {
+
+                if (!(vol_new = malloc(sizeof(volume_t))))
+                    return -ENOMEM;
+
+                memset(vol_new, 0, sizeof(volume_t));
+
+                vol_new->state = volstate_nomedia;
+
+                volmgr_add_mediapath_to_volume(vol_new, dev->media->devpath);
+                vol_new->media_type = vol->media_type;
+                vol_new->mount_point = strdup(default_usb_mountpoint);
+                if (vol->ums_path)
+                    vol_new->ums_path = strdup(vol->ums_path);
+
+                pthread_mutex_lock(&vol->lock);
+                if (!vol_root)
+                    vol_root = vol_new;
+                else {
+                    volume_t *scan = vol_root;
+                    while (scan->next)
+                        scan = scan->next;
+                    scan->next = vol_new;
+                }
+                pthread_mutex_unlock(&vol->lock);
+                vol = vol_new;
+            }
+        } else {
+            LOGE("Volume %s already mounted (did we just crash?)", vol->mount_point);
+            return 0;
+        }
     }
 
+    pthread_mutex_lock(&vol->lock);
     int rc =  _volmgr_consider_disk_and_vol(vol, dev);
     pthread_mutex_unlock(&vol->lock);
     return rc;
@@ -287,9 +410,18 @@ int volmgr_consider_disk(blkdev_t *dev)
 
 int volmgr_start_volume_by_mountpoint(char *mount_point)
 { 
-    volume_t *v;
+    volume_t *v = vol_root;
 
-    v = volmgr_lookup_volume_by_mountpoint(mount_point, true);
+    while(v) {
+        pthread_mutex_lock(&v->lock);
+        if (!strcmp(v->mount_point, mount_point)) {
+           if((v->state == volstate_unmounted) || (v->state == volstate_checking)) {
+              break;
+           }
+        }
+        pthread_mutex_unlock(&v->lock);
+        v = v->next;
+    }
     if (!v)
         return -ENOENT;
 
@@ -321,12 +453,62 @@ static void _cb_volstopped_for_devmapper_teardown(volume_t *v, void *arg)
     pthread_mutex_unlock(&v->lock);
 }
 
+static int volmgr_delete_volume_structure(volume_t *v)
+{
+    volume_t *scan = vol_root;
+
+    if (v->media_type != media_usb)
+        return -1;
+
+    if ((default_usb_devpath != NULL &&
+         !strncmp(v->media_paths[0], default_usb_devpath, sizeof(default_usb_devpath))) ||
+        (default_usb2_devpath != NULL &&
+         !strncmp(v->media_paths[0], default_usb2_devpath, sizeof(default_usb2_devpath)))) {
+        free (v->mount_point);
+        v->mount_point =  strdup(default_usb_mountpoint);
+        return -1;
+    }
+
+    while (scan->next) {
+        if (!strcmp(scan->next->media_paths[0], v->media_paths[0])) {
+           int i;
+           volume_t *next = scan->next->next;
+           scan->next = next;
+
+           for (i = 0; i < VOLMGR_MAX_MEDIAPATHS_PER_VOLUME; i++) {
+                if (v->media_paths[i])
+                    free(v->media_paths[i]);
+           }
+           if (v->mount_point)
+               free(v->mount_point);
+           if (v->ums_path)
+               free(v->ums_path);
+
+           free (v);
+
+           return 0;
+        }
+        scan = scan->next;
+    }
+
+    return -1;
+}
+
 int volmgr_stop_volume_by_mountpoint(char *mount_point)
 {
     int rc;
-    volume_t *v;
+    volume_t *v = vol_root;
 
-    v = volmgr_lookup_volume_by_mountpoint(mount_point, true);
+    while(v) {
+        pthread_mutex_lock(&v->lock);
+        if (!strcmp(v->mount_point, mount_point)) {
+           if(v->state == volstate_mounted) {
+              break;
+           }
+        }
+        pthread_mutex_unlock(&v->lock);
+        v = v->next;
+    }
     if (!v)
         return -ENOENT;
 
@@ -348,6 +530,12 @@ int volmgr_stop_volume_by_mountpoint(char *mount_point)
             LOGE("unable to shutdown volume '%s'", v->mount_point);
         pthread_mutex_unlock(&v->lock);
     }
+
+    if (!rc) {
+        if (v->media_type == media_usb)
+            volmgr_delete_volume_structure(v);
+    }
+
     return 0;
 }
 
@@ -397,6 +585,10 @@ int volmgr_notify_eject(blkdev_t *dev, void (* cb) (blkdev_t *))
                             LOGE("unable to shutdown volume '%s'", v->mount_point);
                         pthread_mutex_unlock(&dmvol->lock);
                     }
+                    if (!rc) {
+                        if (v->media_type == media_usb)
+                            volmgr_delete_volume_structure(v);
+                    }
                 } else 
                     pthread_mutex_unlock(&dmvol->lock);
             }
@@ -427,8 +619,19 @@ int volmgr_notify_eject(blkdev_t *dev, void (* cb) (blkdev_t *))
                 LOGE("unable to shutdown volume '%s'", v->mount_point);
             pthread_mutex_unlock(&v->lock);
         }
+        if (!rc) {
+            if (v->media_type == media_usb)
+                volmgr_delete_volume_structure(v);
+        }
     }
     return 0; 
+}
+
+int volmgr_send_speed_mismatch(char *mfr_name)
+{
+    char *event = VOLD_EVT_SPEED_MISMATCH;
+
+    return send_msg_with_data(event, mfr_name);
 }
 
 static void _cb_volume_stopped_for_eject(volume_t *v, void *arg)
@@ -583,9 +786,15 @@ static int _volmgr_consider_disk_and_vol(volume_t *vol, blkdev_t *dev)
             blkdev_t *part;
             if (vol->media_type == media_mmc)
                 part = blkdev_lookup_by_devno(dev->major, ALIGN_MMC_MINOR(dev->minor) + (i+1));
+            else if (vol->media_type == media_usb)
+                part = blkdev_lookup_by_devno(dev->major, (dev->minor + i + 1));
             else
+
                 part = blkdev_lookup_by_devno(dev->major, (i+1));
             if (!part) {
+                if (vol->media_type == media_usb)
+                    LOGE("Error - unable to lookup partition for blkdev %d:%d", dev->major, (dev->minor + i + 1));
+                else
                 LOGE("Error - unable to lookup partition for blkdev %d:%d",
                     dev->major, dev->minor);
                 continue;
@@ -681,6 +890,7 @@ static void *volmgr_reaper_thread(void *arg)
         LOGI("Reaper sucessfully unmounted %s", vol->mount_point);
         vol->fs = NULL;
         volume_setstate(vol, volstate_unmounted);
+        volmgr_update_mounts_file(vol->mount_point);
     } else {
         LOGE("Unable to unmount!! (%d)", rc);
     }
@@ -739,6 +949,15 @@ static int volmgr_stop_volume(volume_t *v, void (*cb) (volume_t *, void *), void
         if (!rc) {
             LOGI("volmgr_stop_volume(%s): Volume unmounted sucessfully",
                     v->mount_point);
+
+            if (v->media_type == media_usb) {
+                if (rmdir(v->mount_point) == -1)
+                    LOGE("volmgr_stop_volume: Failed to remove directory %s : %s", v->mount_point, strerror(errno));
+                else {
+                    volmgr_update_mounts_file(v->mount_point);
+                }
+            }
+
             if (emit_statechange)
                 volume_setstate(v, volstate_unmounted);
             v->fs = NULL;
@@ -768,7 +987,38 @@ static int volmgr_stop_volume(volume_t *v, void (*cb) (volume_t *, void *), void
     return 0;
 }
 
-
+/*
+ * This function is called when an USB Mass storage device
+ * is unmounted. Update mounts file after removing
+ * the unmounted mount point.
+ */
+static void volmgr_update_mounts_file(char *mount_point)
+{
+    FILE *fp, *fp2;
+    char mp[PATH_MAX];
+    int len;
+    if ((fp = fopen(MOUNTS_FILE, "r")) &&
+        (fp2 = fopen(TEMP_MOUNTS_FILE, "a"))) {
+        while(fgets(mp, sizeof(mp), fp) != NULL) {
+            len = strlen(mp);
+            /*
+             * Copy all mount points from mounts file to a temorary file
+             * except mount point which is unmounted. Then remove mounts file
+             * and rename temporary file as mounts file.
+             * We need to comapare strings with their lengths also because they
+             * should exactly match.
+             */
+            if (strncmp(mount_point, mp, (len-1)) || (strlen(mount_point) != len-1)) {
+                fputs(mp, fp2);
+            }
+        }
+        fclose(fp2);
+        fclose(fp);
+        remove(MOUNTS_FILE);
+        rename(TEMP_MOUNTS_FILE, MOUNTS_FILE);
+    }
+    return;
+}
 /*
  * Gracefully stop a volume
  * v->lock must be held!
@@ -802,6 +1052,10 @@ static void _cb_volstopped_for_ums_enable(volume_t *v, void *arg)
 #if DEBUG_VOLMGR
     LOG_VOL("_cb_volstopped_for_ums_enable(%s):", v->mount_point);
 #endif
+
+    if(v->dev == NULL) 
+        return;
+
     devdir_path = blkdev_get_devpath(v->dev->disk);
 
     if ((rc = ums_enable(devdir_path, v->ums_path)) < 0) {
@@ -880,6 +1134,8 @@ static int volmgr_config_volume(cnode *node)
                 new->media_type = media_mmc;
             else if (!strcmp(child->value, "devmapper"))
                 new->media_type = media_devmapper;
+            else if (!strcmp(child->value, "usb"))
+                new->media_type = media_usb;
             else {
                 LOGE("Invalid media type '%s'", child->value);
                 rc = -EINVAL;
@@ -928,6 +1184,26 @@ static int volmgr_config_volume(cnode *node)
         }
         LOG_VOL("media path for devmapper volume = '%s'", dm_mediapath);
         volmgr_add_mediapath_to_volume(new, dm_mediapath);
+    } else if (new->media_type == media_usb) {
+       /*
+        * Read default device path, mount point and mount path from
+        * vold configuration file
+        */
+        if (!(default_usb_devpath)) {
+            default_usb_devpath = strdup(new->media_paths[0]);
+        } else if (!default_usb2_devpath) {
+            default_usb2_devpath = strdup(new->media_paths[0]);
+        }
+        if (!default_usb_mountpoint) {
+            default_usb_mountpoint = strdup(new->mount_point);
+            default_usb_mountpath = strdup(new->mount_point);
+            for (i=strlen(default_usb_mountpath); i > 0; i--) {
+                 if (default_usb_mountpath[i] == '/') {
+                     default_usb_mountpath[i+1] = '\0';
+                     break;
+                 }
+            }
+        }
     }
 
     if (!vol_root)
@@ -1037,6 +1313,12 @@ static int _volmgr_start(volume_t *vol, blkdev_t *dev)
 {
     struct volmgr_fstable_entry *fs;
     int rc = ENODATA;
+    char *volume_name = NULL;
+    unsigned int num = 1;
+
+    // bind here so that we don't need to lookup a device if
+    // the filesystem is invalid and we need to format (volmgr_format_volume)
+    vol->dev = dev;
 
 #if DEBUG_VOLMGR
     LOG_VOL("_volmgr_start(%s, %d:%d):", vol->mount_point,
@@ -1049,14 +1331,81 @@ static int _volmgr_start(volume_t *vol, blkdev_t *dev)
     }
 
     for (fs = fs_table; fs->name; fs++) {
-        if (!fs->identify_fn(dev))
+        if (!fs->identify_fn(dev, &volume_name))
             break;
     }
 
-    if (!fs) {
+    if (!fs || !fs->name) {
         LOGE("No supported filesystems on %d:%d", dev->major, dev->minor);
         volume_setstate(vol, volstate_nofs);
         return -ENODATA;
+    }
+
+    if (vol->media_type == media_usb) {
+        char disk_num [DISK_NUM_LENGTH + 1];
+        char *path;
+        unsigned int length, path_length;
+        int ret = -1;
+       /*
+        * If the device has a valid volume name then mount file system
+        * with that volume name otherwise mount it with default mount point
+        */
+        if (volume_name) {
+            length = strlen(default_usb_mountpath) +
+                     strlen(volume_name) + DISK_NUM_LENGTH + 1;
+            path = calloc(length, sizeof(char));
+            if (path == NULL){
+                free(volume_name);
+                return -ENOMEM;
+            }
+            /* Create mount point with volume name */
+            strlcpy(path, default_usb_mountpath, (length-1));
+            strlcat(path, volume_name, (length-1));
+            free(volume_name);
+        } else {
+            length = strlen(default_usb_mountpoint) +
+                     DISK_NUM_LENGTH + 1;
+            path = calloc(length, sizeof(char));
+            if (path == NULL){
+                return -ENOMEM;
+            }
+            strlcpy(path, default_usb_mountpoint, (length-1));
+        }
+        ret = mkdir(path, 0777);
+
+       /*
+        * If the mount point already used then add a serial number
+        * and create new mount point
+        */
+        path_length = strlen(path);
+        while (ret == -1 && num < DISK_NUM_MAX) {
+            unsigned int i;
+            for (i = path_length; i < length; i++) {
+                path[i] = '\0';
+            }
+            sprintf(disk_num, "%d", num);
+            strlcat(path, disk_num, (length-1));
+            num++;
+            ret = mkdir(path, 0777);
+            if (ret == -1) {
+                LOGE("Failed to create mount point directory %s : %s", path, strerror(errno));
+            }
+            if (errno != EEXIST)
+                break;
+        }
+
+        if (!ret) {
+            vol->mount_point = path;
+            FILE *fp;
+            if ((fp = fopen(MOUNTS_FILE, "a"))) {
+                fputs(path, fp);
+                fputc('\n', fp);
+                fclose(fp);
+            }
+        } else {
+            free(path);
+            return ret;
+        }
     }
 
     return volmgr_start_fs(fs, vol, dev);

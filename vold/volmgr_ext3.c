@@ -35,7 +35,7 @@
 
 static char E2FSCK_PATH[] = "/system/bin/e2fsck";
 
-int ext_identify(blkdev_t *dev)
+int ext_identify(blkdev_t *dev, char **volume_name)
 {
     int rc = -1;
     int fd;
@@ -72,6 +72,14 @@ int ext_identify(blkdev_t *dev)
         rc = 0;
     else
         rc = -ENODATA;
+
+    if (rc == 0) {
+        if (strlen(sb.s_volume_name))
+            *volume_name = strdup(sb.s_volume_name);
+        else
+            *volume_name = NULL;
+    }
+    LOGE("Ext Volume name = %s", sb.s_volume_name);
 
  out:
 #if EXT_DEBUG
